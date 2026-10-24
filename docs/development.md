@@ -54,6 +54,15 @@ usually means:
 - Fedora: `gcc`
 - Arch: `base-devel`
 
+### Nix
+
+The repository flake provides these prerequisites. `nix develop` opens a shell
+with the Rust toolchain, GTK/libadwaita development files, `dbus`, Xvfb,
+`xdotool` and the AT-SPI Python bindings. `nix build` builds both binaries and
+runs the runtime crate's tests in the sandbox; GUI tests need a display and
+run from the development shell instead. The flake does not provide a NixOS
+module or install system services.
+
 ## Build
 
 Build the runtime from source with:
