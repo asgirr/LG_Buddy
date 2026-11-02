@@ -15,6 +15,12 @@ let
   exe = lib.getExe cfg.package;
   environment.LG_BUDDY_CONFIG = cfg.configFile;
   configPointer = pkgs.writeText "lg-buddy-config-path" "${cfg.configFile}\n";
+  # System lifecycle handling waits for the network with nm-online and reads
+  # NetworkManager's journal with journalctl, both looked up on PATH.
+  lifecyclePath = [
+    config.systemd.package
+  ]
+  ++ lib.optional config.networking.networkmanager.enable config.networking.networkmanager.package;
 in
 {
   options.services.lg-buddy = {
@@ -73,6 +79,8 @@ in
         #!/bin/sh
         set -eu
         [ "''${2:-}" = pre-down ] || exit 0
+        PATH=${lib.makeBinPath lifecyclePath}''${PATH:+:$PATH}
+        export PATH
         exec ${exe} nm-pre-down
       '';
     };
@@ -84,6 +92,7 @@ in
       wantedBy = [ "multi-user.target" ];
       startLimitIntervalSec = 30;
       startLimitBurst = 5;
+      path = lifecyclePath;
       inherit environment;
       serviceConfig = {
         Type = "oneshot";
@@ -98,6 +107,7 @@ in
       after = [ "network-online.target" ];
       wants = [ "network-online.target" ];
       wantedBy = [ "multi-user.target" ];
+      path = lifecyclePath;
       inherit environment;
       serviceConfig = {
         Type = "simple";
