@@ -9,6 +9,35 @@
   <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
+## NixOS
+
+Add the flake's module to your system configuration. It declares LG Buddy's
+system and user services, which setup requires on NixOS:
+
+```nix
+{
+  inputs.lg-buddy.url = "github:asgirr/LG_Buddy";
+
+  outputs = { nixpkgs, lg-buddy, ... }: {
+    nixosConfigurations.my-pc = nixpkgs.lib.nixosSystem {
+      modules = [
+        lg-buddy.nixosModules.default
+        {
+          services.lg-buddy = {
+            enable = true;
+            user = "alice"; # the user who pairs the TV in the app
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+Rebuild with `sudo nixos-rebuild switch`, log out and back in, then open
+LG Buddy, pair the TV and choose **Recheck**. See
+[Nix development](docs/development.md#nix) for the module's options.
+
 Use your LG webOS TV as a Linux PC display with less reaching for the remote.
 
 - **Start and stop with your PC.** Turn the TV on at boot and wake, and off at
