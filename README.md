@@ -50,12 +50,22 @@ in, then open LG Buddy, pair the TV and choose **Recheck**. See
 [Nix development](docs/development.md#nix) for the module's options.
 
 If this repository is private, Nix needs your GitHub credentials to fetch it.
-Either use SSH, `lg-buddy.url = "git+ssh://git@github.com/asgirr/LG_Buddy";`,
-or add a token with read access to `/etc/nix/nix.conf` as
-`access-tokens = github.com=<token>`. `sudo nixos-rebuild` fetches as root,
-so root needs the SSH key or token; alternatively, run `nixos-rebuild switch
---flake .#my-pc --sudo` as your user (`--use-remote-sudo` on older NixOS
-releases) to fetch with your own credentials.
+To use your SSH key from `~/.ssh/`, point the input at SSH in `flake.nix`:
+
+```nix
+lg-buddy.url = "git+ssh://git@github.com/asgirr/LG_Buddy";
+```
+
+Then rebuild as your own user, so Nix fetches with your `~/.ssh` keys and SSH
+agent and asks for your password only to activate the new system:
+
+```sh
+nixos-rebuild switch --flake .#my-pc --sudo
+```
+
+Older NixOS releases use `--use-remote-sudo` instead of `--sudo`. Running
+`sudo nixos-rebuild` instead fetches as root, which reads `/root/.ssh` and
+fails with "Permission denied (publickey)".
 
 Use your LG webOS TV as a Linux PC display with less reaching for the remote.
 
