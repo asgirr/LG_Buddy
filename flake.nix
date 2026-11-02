@@ -47,8 +47,19 @@
         };
       });
 
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ ./nix/module.nix ];
+          services.lg-buddy.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.lg-buddy;
+        };
+
       checks = forAllSystems (pkgs: {
         lg-buddy = self.packages.${pkgs.stdenv.hostPlatform.system}.lg-buddy;
+        nixos-module = pkgs.testers.runNixOSTest {
+          imports = [ ./nix/module-test.nix ];
+          defaults.imports = [ self.nixosModules.default ];
+        };
       });
 
       formatter = forAllSystems (pkgs: pkgs.nixfmt-tree);

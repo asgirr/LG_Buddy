@@ -60,8 +60,41 @@ The repository flake provides these prerequisites. `nix develop` opens a shell
 with the Rust toolchain, GTK/libadwaita development files, `dbus`, Xvfb,
 `xdotool` and the AT-SPI Python bindings. `nix build` builds both binaries and
 runs the runtime crate's tests in the sandbox; GUI tests need a display and
-run from the development shell instead. The flake does not provide a NixOS
-module or install system services.
+run from the development shell instead.
+
+On NixOS, setup does not install services; it verifies that the loaded units
+are enabled, running and bound to the paired configuration. Running the
+package alone with `nix run` therefore stops at **Service setup incomplete**.
+Declare the services with the flake's NixOS module instead:
+
+```nix
+{
+  inputs.lg-buddy.url = "github:Staphylococcus/LG_Buddy";
+
+  outputs = { nixpkgs, lg-buddy, ... }: {
+    nixosConfigurations.my-pc = nixpkgs.lib.nixosSystem {
+      modules = [
+        lg-buddy.nixosModules.default
+        {
+          services.lg-buddy = {
+            enable = true;
+            user = "alice"; # the user who pairs the TV in the app
+          };
+        }
+      ];
+    };
+  };
+}
+```
+
+The module declares the system and user units with `LG_BUDDY_CONFIG` set to
+`~/.config/lg-buddy/config.env` for that user (`services.lg-buddy.configFile`
+overrides it), the `/usr/lib/lg-buddy/config-path` pointer and the
+NetworkManager pre-down hook. After switching to the new configuration, log
+out and back in so the user units start, then choose **Recheck** in the app.
+`services.lg-buddy.updateCheck.enable` must match **Settings → Updates →
+automatic checks** (`updates.auto_check`), which is on by default.
+`nix build .#checks.x86_64-linux.nixos-module` runs the module's VM test.
 
 ## Build
 
