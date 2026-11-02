@@ -107,6 +107,14 @@ rustPlatform.buildRustPackage {
       --replace-fail "Exec=/usr/bin/lg-buddy" "Exec=$out/bin/lg-buddy"
     install -Dm644 data/icons/hicolor/scalable/apps/io.github.staphylococcus.LGBuddy.svg \
       $out/share/icons/hicolor/scalable/apps/io.github.staphylococcus.LGBuddy.svg
+
+    # Setup checks Plasma integration through this helper, found relative to
+    # the executable; on other desktops it reports the step as not applicable.
+    mkdir -p $out/lib/lg-buddy
+    cp -R data/kwin $out/lib/lg-buddy/kwin
+    chmod 755 $out/lib/lg-buddy/kwin/setup.sh $out/lib/lg-buddy/kwin/build.sh
+    substituteInPlace $out/lib/lg-buddy/kwin/setup.sh \
+      --replace-fail "runtime=/usr/bin/lg-buddy" "runtime=$out/bin/lg-buddy"
   '';
 
   meta = {
