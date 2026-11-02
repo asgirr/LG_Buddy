@@ -79,6 +79,9 @@ rustPlatform.buildRustPackage {
   # GUI tests need a display; run the runtime crate's suite only. Starting the
   # lifecycle service requires systemctl in a trusted system location (/usr/bin
   # or /run/current-system), which the sandbox lacks, so that test is skipped.
+  # On some machines the in-memory registration timeout test reports a
+  # connection failure instead of a timeout; it is skipped here and still runs
+  # in the project's CI.
   # The cucumber harness rejects libtest flags and runs on its own.
   checkPhase =
     let
@@ -95,7 +98,8 @@ rustPlatform.buildRustPackage {
       runHook preCheck
       ${cargoTest} --lib --bins ${integrationTests} -- \
         --test-threads=$NIX_BUILD_CORES \
-        --skip sleep_activation_authorizes_before_saving_and_reuses_the_active_service
+        --skip sleep_activation_authorizes_before_saving_and_reuses_the_active_service \
+        --skip pairing::tests::prepare_in_memory_registration_timeout_is_distinct_without_fallback
       ${cargoTest} --test cucumber
       runHook postCheck
     '';
