@@ -11,32 +11,51 @@
 
 ## NixOS
 
-Add the flake's module to your system configuration. It declares LG Buddy's
-system and user services, which setup requires on NixOS:
+LG Buddy's NixOS module declares the system and user services that setup
+requires on NixOS. Your system must be built from a flake.
+
+In your system's `flake.nix`, add LG Buddy as an input and import its module:
 
 ```nix
 {
-  inputs.lg-buddy.url = "github:asgirr/LG_Buddy";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    lg-buddy.url = "github:asgirr/LG_Buddy";
+  };
 
   outputs = { nixpkgs, lg-buddy, ... }: {
     nixosConfigurations.my-pc = nixpkgs.lib.nixosSystem {
       modules = [
+        ./configuration.nix
         lg-buddy.nixosModules.default
-        {
-          services.lg-buddy = {
-            enable = true;
-            user = "alice"; # the user who pairs the TV in the app
-          };
-        }
       ];
     };
   };
 }
 ```
 
-Rebuild with `sudo nixos-rebuild switch`, log out and back in, then open
-LG Buddy, pair the TV and choose **Recheck**. See
+In `configuration.nix`, enable it for the user who pairs the TV in the app:
+
+```nix
+{
+  services.lg-buddy = {
+    enable = true;
+    user = "alice";
+  };
+}
+```
+
+Rebuild with `sudo nixos-rebuild switch --flake .#my-pc`, log out and back
+in, then open LG Buddy, pair the TV and choose **Recheck**. See
 [Nix development](docs/development.md#nix) for the module's options.
+
+If this repository is private, Nix needs your GitHub credentials to fetch it.
+Either use SSH, `lg-buddy.url = "git+ssh://git@github.com/asgirr/LG_Buddy";`,
+or add a token with read access to `/etc/nix/nix.conf` as
+`access-tokens = github.com=<token>`. `sudo nixos-rebuild` fetches as root,
+so root needs the SSH key or token; alternatively, run `nixos-rebuild switch
+--flake .#my-pc --sudo` as your user (`--use-remote-sudo` on older NixOS
+releases) to fetch with your own credentials.
 
 Use your LG webOS TV as a Linux PC display with less reaching for the remote.
 
