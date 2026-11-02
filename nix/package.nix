@@ -10,6 +10,8 @@
   libadwaita,
   dbus,
   python3,
+  bash,
+  coreutils,
   writeText,
   writeShellScriptBin,
   src,
@@ -119,6 +121,17 @@ rustPlatform.buildRustPackage {
     chmod 755 $out/lib/lg-buddy/kwin/setup.sh $out/lib/lg-buddy/kwin/build.sh
     substituteInPlace $out/lib/lg-buddy/kwin/setup.sh \
       --replace-fail "runtime=/usr/bin/lg-buddy" "runtime=$out/bin/lg-buddy"
+  '';
+
+  # Setup runs its helpers through `bash` and coreutils from PATH. NixOS user
+  # services get a minimal PATH without bash, so append them as a fallback.
+  preFixup = ''
+    gappsWrapperArgs+=(--suffix PATH : ${
+      lib.makeBinPath [
+        bash
+        coreutils
+      ]
+    })
   '';
 
   meta = {
