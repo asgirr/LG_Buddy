@@ -1,7 +1,7 @@
 {
   description = "LG Buddy: make your LG webOS TV feel at home on your Linux desktop";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
 
   outputs =
     { self, nixpkgs }:
