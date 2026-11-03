@@ -55,28 +55,6 @@ Automatic monitoring uses the available native GNOME and Wayland sources.
 LG Buddy does not launch or require swayidle. If the TV does not blank or restore as expected, follow
 the [screen behavior and troubleshooting guide](docs/user-guide.md#automatic-screen-blanking).
 
-## Distribution Support
-
-Official downloads target **x86_64 Linux** with a writable systemd installation.
-In-app updates are available through LG Buddy's update screen or CLI.
-
-| Distribution | Official downloads | Updates |
-| --- | --- | --- |
-| Ubuntu 24.04 LTS | `.deb` or release bundle | In-app updates. |
-| Fedora, standard writable installation | `.rpm` or release bundle | In-app updates; RPM updates require **44+**. Fedora **43** RPMs: [update manually](docs/user-guide.md#manual-rpm-updates). |
-| Arch Linux, fully updated | Official release bundle | In-app updates. |
-
-- **Other Debian/Ubuntu releases and derivatives such as Pop!_OS** may work
-  when they meet the requirements below, but are not separately supported baselines.
-- **Other RPM distributions, including RHEL-family and openSUSE:** no in-app
-  RPM updates. Release bundles require a compatible system.
-- **NixOS and immutable systems, including Fedora Atomic:** the installer and
-  in-app updates are unsupported. Distribution-specific integration is planned
-  under [#24](https://github.com/Staphylococcus/LG_Buddy/issues/24).
-
-Use a distribution release still maintained by its vendor. See
-[Before You Install](#before-you-install) for library and desktop requirements.
-
 ## Before You Install
 
 LG Buddy manages one TV. Connect it to the same network as your PC and enable
@@ -122,15 +100,10 @@ Without native idle support, disable **Idle blanking** to keep other LG Buddy
 features available, or use [external idle automation](docs/user-guide.md#external-idle-automation).
 
 The shell installer supports conventional Linux installations with writable
-system locations. The [public Nix package and NixOS/Home Manager modules](docs/nix.md) provide
-the declarative installation route being qualified for 2.1.0. Store-owned installations defer updates
-to Nix, and generated declarations can make individual settings read-only while
-preserving user preferences. Native end-to-end NixOS qualification remains open; see [issue #253](https://github.com/Staphylococcus/LG_Buddy/issues/253).
+system locations. Official NixOS support is planned for 3.0.0; see
+[issue #24](https://github.com/Staphylococcus/LG_Buddy/issues/24).
 
 ## Install
-
-For `.deb` or `.rpm` downloads, follow the [package installation steps](docs/user-guide.md#install-a-native-package).
-For the release bundle:
 
 1. Download and extract the [release archive](https://github.com/Staphylococcus/LG_Buddy/releases)
    for your platform.

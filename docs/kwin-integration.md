@@ -66,16 +66,8 @@ existing fallback chain.
 
 Plugin files use a per-user, content-addressed name in the system Qt plugin
 directory. Installation uses the existing privilege route, verifies the copied
-bytes and shares the bundle installer's ownership/mount guard. KWin's loader
-requires these files under `/usr/lib*/qt6/plugins/kwin/plugins`. Both
-installation and removal refuse package-owned files, conflicting ownership,
-unavailable package-database answers, read-only mounts and immutable/declarative
-host markers before changing the artifact. Existing package-owned container
-directories are only traversed; their ownership and permissions are preserved.
-During provisioning, the shipped payload remains verify-only. A bundled prebuilt
-and a cached local build use the same guarded copy into KWin's loader location.
-Distinct names allow local compilation after Qt has rejected another candidate.
-Successful loading enables that exact
+bytes and refuses package-owned files. Distinct names allow local compilation
+after Qt has rejected another candidate. Successful loading enables that exact
 plugin in the user's `kwinrc` for subsequent Plasma logins.
 
 Local builds live under `$XDG_CACHE_HOME/lg-buddy/kwin` (normally
@@ -254,20 +246,6 @@ native inspection and removal with an empty `PATH`, proving that neither needs
 the external `flock` command or shell filesystem utilities. Private D-Bus tests in `tests/inhibition.rs`
 exercise the actual Rust adapter, independent PowerDevil/KWin Booleans, owner
 replacement, delayed replies, cancellation, failure and recovery.
-
-`tests/features/plasma_setup.feature` runs production discovery, the native
-provisioner and the privileged installer/remover together in disposable mount
-and user namespaces. KWin's D-Bus API and package/configuration tools are external
-contract fixtures; privileged file operations are real. It covers `/usr/lib64 ->
-lib`, real `/usr/lib64`, repeat setup, repair with legacy receipts, and rejection
-of an unexpected Qt directory symlink without changing the redirected files.
-
-The required CI `plasma-setup` job additionally runs
-`scripts/test-kwin-native-setup.sh` on Arch and Fedora with real headless KWin,
-an installed runtime and the normal system plugin directory. It exercises setup,
-repeat setup, stale-artifact repair and cleanup without injecting
-`QT_PLUGIN_PATH`. The script requires a disposable host and an ordinary test user
-with passwordless sudo; never run it against a personal desktop installation.
 
 `scripts/test-kwin-plugin.sh` loads each CI artifact into a disposable headless
 KWin, calls its getter and build identity, unloads it and checks compositor survival.
