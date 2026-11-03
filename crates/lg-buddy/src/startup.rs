@@ -1,7 +1,7 @@
-//! Startup conversion boundary for the GUI and user-owned screen daemon.
+//! Startup conversion boundary for the user-owned screen daemon.
 //!
 //! Resolves the config path and converts a supported stale 1.x / bscpylgtv
-//! config before application workers read it.
+//! config before the daemon reads it.
 //!
 //! The screen daemon (`LG_Buddy_screen.service`) runs as the config's owner.
 //! The lifecycle daemon (`LG_Buddy_lifecycle.service`) runs as root, and
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use crate::migration::automatic::migrate_config;
 use crate::RunError;
 
-/// Resolve the config path, run automatic migration when this GUI or daemon can be
+/// Resolve the config path, run automatic migration when this process can be
 /// the config's non-root owner, then hand the path back so the caller can read
 /// a current `CurrentConfig`.
 ///
@@ -29,8 +29,6 @@ use crate::RunError;
 pub fn backend_start() -> Result<PathBuf, RunError> {
     let config_path =
         crate::config::resolve_config_path_from_env().map_err(RunError::ConfigPath)?;
-    crate::config::declarative::Declarations::load(&config_path)
-        .map_err(|e| RunError::Config(crate::config::ConfigError::Io(e)))?;
     // euid check so a non-owner user daemon still fails loudly on a real I/O migration
     // error; upgrade to an owner_for_write probe if root becomes the only caller.
     if unsafe { libc::geteuid() } == 0 {

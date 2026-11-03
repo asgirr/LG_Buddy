@@ -12,43 +12,9 @@ permissions:
   checks: read
   contents: read
 
-env:
-  SMOKE_VERSION: 2.0.0-beta.1.ci
-
 jobs:
   kwin-bridges:
     uses: ./.github/workflows/kwin-bridge.yml
-
-  nix-package:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install Nix
-        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-        with:
-          install_url: https://releases.nixos.org/nix/nix-2.34.8/install
-          extra_nix_config: |
-            system-features = nixos-test benchmark big-parallel kvm
-      - name: Allow the disposable NixOS test VM to use KVM
-        run: |
-          test -c /dev/kvm
-          sudo chmod a+rw /dev/kvm
-      - name: Evaluate public package outputs
-        run: nix flake check --no-build --all-systems
-      - name: Build and exercise the installed package
-        run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.package
-      - name: Verify Nix release-channel identities
-        run: python3 scripts/test-nix-release-channels.py
-      - name: Validate public module options and activation in a disposable NixOS VM
-        run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.module-evaluation .#checks.x86_64-linux.launcher .#checks.x86_64-linux.modules
-      - name: Load the optional bridge in the matching Nix KWin
-        run: nix build --print-build-logs --no-link --cores 2 --max-jobs 2 .#checks.x86_64-linux.kwin
-      - name: Verify update ownership on the real store filesystem
-        run: |
-          package="$(nix eval --raw .#packages.x86_64-linux.lg-buddy.outPath)"
-          bash scripts/test-nix-update-ownership.sh "$package"
-          python3 scripts/test-declarative-settings.py "$package/bin/lg-buddy" --nix
 
   verify:
     runs-on: ubuntu-24.04
@@ -71,9 +37,12 @@ jobs:
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
+      - name: Run Rust test suite
+        run: cargo test --locked -p lg-buddy
+
       - name: Verify root-scoped ownership behavior
         run: |
-          # Ask Cargo for the exact test executable;
+          # Ask Cargo for the exact executable from the preceding build;
           # globbing target/debug/deps can select a stale test binary.
           test_binary="$(cargo test --locked -p lg-buddy --lib --no-run --message-format=json | python3 -c '
           import json, sys
@@ -87,8 +56,6 @@ jobs:
           print(executables[0])')"
           # Owner subprocesses must reach the binary even if the checkout's
           # parent directories are private to the runner account.
-          install -m 755 "$test_binary" target/native-package-tests
-          strip --strip-debug target/native-package-tests
           privileged_test_dir="$(mktemp -d)"
           trap 'rm -rf "$privileged_test_dir"' EXIT
           chmod 755 "$privileged_test_dir"
@@ -100,28 +67,15 @@ jobs:
             pairing_store::tests::mutation_lock_rejects_unsafe_existing_markers \
             setup::kwin::native::tests::system_install_validates_artifacts_and_preserves_existing_files \
             setup::kwin::native::tests::legacy_lock_migration_preserves_foreign_owned_files \
-            pairing_store::migration::tests::migration_preserves_config_access_metadata \
-            config::declarative::tests::root_reads_user_owned_declarations_without_materializing_or_bypassing_management \
-            config::activation::tests::root_machine_publication_never_creates_or_claims_user_state; do
+            pairing_store::migration::tests::migration_preserves_config_access_metadata; do
             "$test_binary" --list --format=terse | grep -Fx "$test: test"
             sudo env TMPDIR="$privileged_test_dir" "$test_binary" "$test" --exact
           done
-
-      - name: Save native package verification tests
-        uses: actions/upload-artifact@v6
-        with:
-          name: ci-native-package-tests
-          path: target/native-package-tests
-          if-no-files-found: error
 
       - name: Install GTK test prerequisites
         run: |
           # Chrome is unused; its third-party index must not block Ubuntu dependencies.
           sudo rm -fv /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          # Avoid slow Azure mirror downloads consuming the test job's time budget.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|http://azure[.]archive[.]ubuntu[.]com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
-          fi
           sudo apt-get update
           sudo apt-get install -y at-spi2-core bubblewrap dbus-x11 gjs libadwaita-1-dev libglib2.0-bin libgtk-4-dev pkexec python3-dbus python3-pyatspi xdotool xvfb
 
@@ -134,14 +88,10 @@ jobs:
           fi
           bwrap --ro-bind / / --dev /dev true
 
-      - name: Run Rust test suite
-        run: cargo test --locked -p lg-buddy
-
       - name: Run display-backed GTK test suite
         run: |
           cargo build -p lg-buddy -p lg-buddy-gui
           bash scripts/test-settings-compatibility.sh ./target/debug/lg-buddy
-          python3 scripts/test-declarative-settings.py ./target/debug/lg-buddy
           cargo build --locked -p lg-buddy --example gui_journey_tv
           python3 scripts/test-tv-fixture.py ./target/debug/lg-buddy ./target/debug/examples/gui_journey_tv
           python3 scripts/test-setup-cli.py ./target/debug/lg-buddy ./target/debug/examples/gui_journey_tv
@@ -158,7 +108,7 @@ jobs:
 
       - name: Validate shell scripts
         run: |
-          bash -n data/kwin/setup.sh data/kwin/build.sh scripts/test-kwin-plugin.sh scripts/test-kwin-distro.sh scripts/test-kwin-setup.sh scripts/test-kwin-native-setup.sh scripts/test-gnome-extension.sh install.sh uninstall.sh configure.sh bin/LG_Buddy_Common scripts/build-release-bundle.sh scripts/test-gui-launch.sh scripts/test-installed-gui.sh scripts/test-installer-first-run.sh scripts/test-installer-gui-dependencies.sh scripts/test-installer-graphical-auth.sh scripts/test-release-bundle.sh scripts/test-release-gui-behavior.sh scripts/test-release-gui-journey.sh scripts/test-release-linkage.sh scripts/test-cross-version-upgrade.sh scripts/test-without-python.sh scripts/test-production-upgrade-canary.sh scripts/publish-release-assets.sh
+          bash -n data/kwin/setup.sh data/kwin/build.sh scripts/test-kwin-plugin.sh scripts/test-kwin-distro.sh scripts/test-kwin-setup.sh scripts/test-gnome-extension.sh install.sh uninstall.sh configure.sh bin/LG_Buddy_Common scripts/build-release-bundle.sh scripts/test-gui-launch.sh scripts/test-installed-gui.sh scripts/test-installer-first-run.sh scripts/test-installer-gui-dependencies.sh scripts/test-installer-graphical-auth.sh scripts/test-release-bundle.sh scripts/test-release-gui-behavior.sh scripts/test-release-gui-journey.sh scripts/test-release-linkage.sh scripts/test-cross-version-upgrade.sh scripts/test-without-python.sh scripts/test-production-upgrade-canary.sh scripts/publish-release-assets.sh
           python3 -m py_compile scripts/test-release-gui-accessibility.py scripts/test-native-setup-recovery.py scripts/xwd_mean.py tools/mock_github_gui.py
 
       - name: Validate deterministic GUI GitHub fixture
@@ -167,7 +117,7 @@ jobs:
       - name: Verify setup helpers and KWin fallbacks
         run: |
           bash -n data/setup-services.sh scripts/test-service-setup.sh
-          bash scripts/test-service-setup.sh ./target/debug/lg-buddy
+          bash scripts/test-service-setup.sh
           bash scripts/test-kwin-setup.sh
           python3 scripts/test_kwin_matrix.py
 
@@ -185,311 +135,18 @@ jobs:
       - name: Validate release publication contract
         run: python3 scripts/test_publish_release_assets.py
 
-      - name: Validate complete release asset identities
-        run: |
-          python3 scripts/test_release_assets.py
-          python3 scripts/test_package_release_canary.py
-
       - name: Validate release bundle manifest contract
         run: python3 scripts/test_release_bundle_manifest.py
 
-      - name: Validate Debian package input contract
-        run: python3 scripts/test_build_debian_package.py
-
-      - name: Validate RPM package input contract
-        run: python3 scripts/test_build_rpm_package.py
-
       - name: Validate GitHub response recorder
         run: python3 scripts/test_record_github_release_responses.py
-
-      - name: Build GUI journey fixtures
-        env:
-          LG_BUDDY_BUILD_COMMIT: ${{ github.sha }}
-          LG_BUDDY_RELEASE_VERSION: "0.0.0"
-        run: |
-          # Reuse the GNU debug graph already built by the Rust/GTK checks.
-          # The release bundle job only needs its optimized target graphs.
-          cargo build --locked -p lg-buddy -p lg-buddy-gui --features gui-test-fixtures --bins --example gui_journey_tv
-          mkdir -p target/gui-journey-fixtures
-          cp target/debug/lg-buddy target/debug/lg-buddy-gui target/debug/examples/gui_journey_tv target/gui-journey-fixtures/
-
-      - name: Upload GUI journey fixtures for supported-distro checks
-        uses: actions/upload-artifact@v6
-        with:
-          name: ci-gui-journey-fixtures
-          path: target/gui-journey-fixtures/*
-          if-no-files-found: error
-          retention-days: 7
-
-  debian-package:
-    runs-on: ubuntu-24.04
-    container: ubuntu:24.04
-    timeout-minutes: 20
-    needs: bundle-build
-    steps:
-      - name: Install package build and smoke prerequisites
-        env:
-          DEBIAN_FRONTEND: noninteractive
-        run: |
-          apt-get update
-          apt-get install -y --no-install-recommends binutils ca-certificates dbus-x11 dpkg-dev fonts-dejavu-core git libadwaita-1-0 libglib2.0-bin libgtk-4-1 passwd pkexec polkitd procps python3 sudo systemd xauth xdotool xvfb
-
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      - name: Download verified release bundle
-        uses: actions/download-artifact@v7
-        with:
-          name: ci-release-bundle
-          path: dist
-
-      - name: Download debug-only updater transport fixtures
-        uses: actions/download-artifact@v7
-        with:
-          name: ci-gui-journey-fixtures
-          path: updater-fixtures
-
-      - name: Build reproducible Debian packages
-        shell: bash
-        run: |
-          archive=(dist/*.tar.gz)
-          test "${#archive[@]}" = 1
-          # The root container uses a checkout owned by the host runner.
-          epoch="$(git -c safe.directory="$GITHUB_WORKSPACE" show -s --format=%ct HEAD)"
-          python3 scripts/build_debian_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir dist
-          python3 scripts/build_debian_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir dist --revision 2
-          python3 scripts/build_debian_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir reproducible --revision 2
-          cmp dist/*-2_amd64.deb reproducible/*-2_amd64.deb
-
-      - name: Verify native package lifecycle and startup migration
-        shell: bash
-        env:
-          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
-        run: bash scripts/test-debian-package.sh dist/*-1_amd64.deb dist/*-2_amd64.deb
-
-      - name: Verify installed APT update and user GUI handoff
-        shell: bash
-        env:
-          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
-        run: |
-          python3 scripts/test-debian-update.py \
-            --archive dist/*.tar.gz --package dist/*-1_amd64.deb \
-            --runtime-fixture updater-fixtures/lg-buddy \
-            --gui-fixture updater-fixtures/lg-buddy-gui
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: ci-debian-package
-          path: dist/*-1_amd64.deb
-          if-no-files-found: error
-
-  rpm-package:
-    runs-on: ubuntu-24.04
-    container: fedora:44
-    timeout-minutes: 20
-    needs: bundle-build
-    steps:
-      - name: Install RPM build and smoke prerequisites
-        run: |
-          dnf5 install -y --setopt=install_weak_deps=False binutils dbus-daemon dbus-tools dejavu-sans-fonts diffutils findutils git gtk4 libadwaita polkit procps-ng python3 python3-rpm rpm-build shadow-utils sudo systemd tar util-linux xdotool xorg-x11-server-Xvfb xorg-x11-xauth
-
-      - name: Check out repository
-        uses: actions/checkout@v5
-
-      - name: Download verified release bundle
-        uses: actions/download-artifact@v7
-        with:
-          name: ci-release-bundle
-          path: dist
-
-      - name: Download updater transport fixtures
-        uses: actions/download-artifact@v7
-        with:
-          name: ci-gui-journey-fixtures
-          path: updater-fixtures
-
-      - name: Download native verification tests
-        uses: actions/download-artifact@v7
-        with:
-          name: ci-native-package-tests
-          path: native-tests
-
-      - name: Verify RPM acquisition and privileged receipt
-        run: |
-          chmod 755 native-tests/native-package-tests
-          native-tests/native-package-tests release_bundle::rpm:: --nocapture
-
-      - name: Verify native RPM version ordering and package inputs
-        run: python3 scripts/test_build_rpm_package.py
-
-      - name: Build reproducible RPM packages
-        shell: bash
-        run: |
-          archive=(dist/*.tar.gz)
-          test "${#archive[@]}" = 1
-          epoch="$(git -c safe.directory="$GITHUB_WORKSPACE" show -s --format=%ct HEAD)"
-          python3 scripts/test-rpm-optional-dependencies.py --archive "${archive[0]}" --source-date-epoch "$epoch"
-          python3 scripts/build_rpm_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir dist
-          python3 scripts/build_rpm_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir dist --revision 2
-          python3 scripts/build_rpm_package.py --archive "${archive[0]}" --source-date-epoch "$epoch" --output-dir reproducible --revision 2
-          cmp dist/*-2.x86_64.rpm reproducible/*-2.x86_64.rpm
-
-      - name: Verify native RPM lifecycle and startup migration
-        shell: bash
-        env:
-          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
-        run: bash scripts/test-rpm-package.sh dist/*-1.x86_64.rpm dist/*-2.x86_64.rpm
-
-      - name: Verify DNF update handoff
-        shell: bash
-        env:
-          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
-        run: |
-          chmod 755 updater-fixtures/*
-          python3 scripts/test-debian-update.py --format rpm \
-            --archive dist/*.tar.gz --package dist/*-1.x86_64.rpm \
-            --runtime-fixture updater-fixtures/lg-buddy \
-            --gui-fixture updater-fixtures/lg-buddy-gui
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: ci-rpm-package
-          path: dist/*-1.x86_64.rpm
-          if-no-files-found: error
-
-  dnf-update-fedora44:
-    runs-on: ubuntu-24.04
-    container: fedora:44
-    timeout-minutes: 15
-    needs: rpm-package
-    steps:
-      - name: Install DNF replay and GUI prerequisites
-        run: dnf5 install -y --setopt=install_weak_deps=False binutils dbus-daemon dbus-tools dejavu-sans-fonts findutils git gtk4 libadwaita polkit procps-ng python3 rpm-build shadow-utils sudo systemd tar util-linux xdotool xorg-x11-server-Xvfb xorg-x11-xauth
-
-      - uses: actions/checkout@v5
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-release-bundle
-          path: dist
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-rpm-package
-          path: dist
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-gui-journey-fixtures
-          path: updater-fixtures
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-native-package-tests
-          path: native-tests
-
-      - name: Verify stored RPM signature enforcement
-        shell: bash
-        run: |
-          dnf5 download --destdir signature-fixtures libglvnd-gles.x86_64
-          signed=(signature-fixtures/*.rpm)
-          unsigned=(dist/*.rpm)
-          test "${#signed[@]}" = 1
-          test "${#unsigned[@]}" = 1
-          chmod 755 native-tests/native-package-tests
-          LG_BUDDY_TEST_SIGNED_RPM="$(realpath "${signed[0]}")" \
-            LG_BUDDY_TEST_UNSIGNED_RPM="$(realpath "${unsigned[0]}")" \
-            native-tests/native-package-tests rpm_update:: --nocapture
-
-      - name: Verify DNF update adds an absent repository dependency
-        shell: bash
-        env:
-          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
-        run: |
-          rpm -q dnf5 libdnf5
-          chmod 755 updater-fixtures/*
-          python3 scripts/test-debian-update.py --format rpm \
-            --archive dist/*.tar.gz --package dist/*.rpm \
-            --runtime-fixture updater-fixtures/lg-buddy \
-            --gui-fixture updater-fixtures/lg-buddy-gui \
-            --expect-new-rpm-dependency libglvnd-gles
-
-      - uses: actions/upload-artifact@v6
-        if: always()
-        with:
-          name: ci-fedora44-dnf-update
-          path: /home/lgdeb-update/update-*.output
-          if-no-files-found: warn
-
-  rpm-update-fedora43-refusal:
-    runs-on: ubuntu-24.04
-    container: fedora:43
-    timeout-minutes: 10
-    needs: rpm-package
-    steps:
-      - name: Install refusal-test prerequisites
-        run: dnf5 install -y --setopt=install_weak_deps=False binutils gtk4 libadwaita python3 rpm-build shadow-utils sudo util-linux
-      - uses: actions/checkout@v5
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-release-bundle
-          path: dist
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-rpm-package
-          path: dist
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-gui-journey-fixtures
-          path: updater-fixtures
-      - name: Require guidance before discovery, authorization or mutation
-        shell: bash
-        env:
-          LG_BUDDY_DISPOSABLE_PACKAGE_TEST: "1"
-        run: |
-          chmod 755 updater-fixtures/*
-          python3 scripts/test-debian-update.py --format rpm \
-            --archive dist/*.tar.gz --package dist/*.rpm \
-            --runtime-fixture updater-fixtures/lg-buddy \
-            --gui-fixture updater-fixtures/lg-buddy-gui \
-            --expect-unsupported-rpm-platform
-
-  release-assets:
-    runs-on: ubuntu-24.04
-    container: fedora:44
-    timeout-minutes: 10
-    needs: [bundle-build, debian-package, rpm-package]
-    steps:
-      - name: Install non-installing package decoders
-        run: dnf5 install -y --setopt=install_weak_deps=False dpkg git python3 rpm
-
-      - uses: actions/checkout@v5
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-release-bundle
-          path: dist
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-debian-package
-          path: dist
-
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-rpm-package
-          path: dist
-
-      - name: Verify and assemble all real release formats together
-        run: |
-          python3 scripts/release_assets.py --dist-dir dist --tag "v$SMOKE_VERSION" --commit "$GITHUB_SHA" --write-checksums
-          python3 scripts/release_assets.py --dist-dir dist --tag "v$SMOKE_VERSION" --commit "$GITHUB_SHA"
-          GH_RELEASE_DRY_RUN=1 bash scripts/publish-release-assets.sh stage-draft --dist-dir dist --tag "v$SMOKE_VERSION" --commit "$GITHUB_SHA"
 
   bundle-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: [verify, kwin-bridges]
+    env:
+      SMOKE_VERSION: 1.4.0-beta.2.ci
 
     steps:
       - name: Check out repository
@@ -512,10 +169,6 @@ jobs:
         run: |
           # Chrome is unused; its third-party index must not block Ubuntu dependencies.
           sudo rm -fv /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          # Avoid slow Azure mirror downloads consuming the build job's time budget.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|http://azure[.]archive[.]ubuntu[.]com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
-          fi
           sudo apt-get update
           sudo apt-get install -y binutils libadwaita-1-dev libgtk-4-dev musl-tools
 
@@ -541,6 +194,17 @@ jobs:
           umask 0002
           ./scripts/build-release-bundle.sh --target x86_64-unknown-linux-musl --gui-target x86_64-unknown-linux-gnu --version "$SMOKE_VERSION" --output-dir dist --require-kwin-matrix
 
+      - name: Build GUI journey fixtures
+        env:
+          LG_BUDDY_BUILD_COMMIT: ${{ github.sha }}
+          LG_BUDDY_RELEASE_VERSION: "0.0.0"
+        run: |
+          # The fixture shares the GNU debug dependency graph and glibc floor
+          # of the GUI pair tested on Ubuntu, Fedora and Arch.
+          cargo build --locked -p lg-buddy -p lg-buddy-gui --features gui-test-fixtures --bins --example gui_journey_tv
+          mkdir -p target/gui-journey-fixtures
+          cp target/debug/lg-buddy target/debug/lg-buddy-gui target/debug/examples/gui_journey_tv target/gui-journey-fixtures/
+
       - name: Upload bundle for supported-distro checks
         uses: actions/upload-artifact@v6
         with:
@@ -549,16 +213,30 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  bundle-smoke-suites:
+      - name: Upload GUI journey fixtures for supported-distro checks
+        uses: actions/upload-artifact@v6
+        with:
+          name: ci-gui-journey-fixtures
+          path: target/gui-journey-fixtures/*
+          if-no-files-found: error
+          retention-days: 7
+
+  bundle-smoke-test:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     needs: bundle-build
-    strategy:
-      fail-fast: false
-      matrix:
-        suite: [release-bundle, installed-gui, cross-version-upgrade, v1-migration]
+    # This required check must fail, rather than be skipped, if production fails.
+    if: ${{ !cancelled() }}
+    env:
+      SMOKE_VERSION: 1.4.0-beta.2.ci
 
     steps:
+      - name: Require successfully built artifacts
+        if: needs.bundle-build.result != 'success'
+        run: |
+          echo "Bundle production did not succeed." >&2
+          exit 1
+
       - name: Check out repository
         uses: actions/checkout@v5
 
@@ -571,12 +249,8 @@ jobs:
         run: |
           # Chrome is unused; its third-party index must not block Ubuntu dependencies.
           sudo rm -fv /etc/apt/sources.list.d/google-chrome.list /etc/apt/sources.list.d/google-chrome.sources
-          # Avoid slow Azure mirror downloads consuming the smoke job's time budget.
-          if [ -f /etc/apt/apt-mirrors.txt ]; then
-            sudo sed -i 's|http://azure[.]archive[.]ubuntu[.]com/ubuntu|https://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
-          fi
           sudo apt-get update
-          sudo apt-get install -y at-spi2-core binutils dbus-x11 libadwaita-1-dev libgtk-4-dev pkexec python3-dbus python3-pyatspi python3-venv strace xdotool xvfb
+          sudo apt-get install -y at-spi2-core binutils dbus-x11 libadwaita-1-dev libgtk-4-dev pkexec python3-dbus python3-pyatspi strace xdotool xvfb
           # Prove current installation and GUI behavior without the retired dialog tool or external idle command.
           sudo apt-get purge -y zenity swayidle
 
@@ -607,7 +281,6 @@ jobs:
           unshare -Ur true
 
       - name: Smoke test release bundle
-        if: matrix.suite == 'release-bundle'
         run: |
           if command -v zenity; then
             echo "Release-bundle smoke requires a host without Zenity." >&2
@@ -625,7 +298,6 @@ jobs:
               --expected-commit "${{ github.sha }}"
 
       - name: Smoke test installed GUI journey
-        if: matrix.suite == 'installed-gui'
         run: |
           dbus-run-session -- xvfb-run -a env ADW_DISABLE_PORTAL=1 GDK_BACKEND=x11 GDK_DEBUG=no-portals NO_AT_BRIDGE=1 \
               bash ./scripts/test-installed-gui.sh \
@@ -635,7 +307,6 @@ jobs:
               "dist/lg-buddy-${SMOKE_VERSION}-x86_64-unknown-linux-musl.tar.gz"
 
       - name: Download pinned cross-version baseline
-        if: matrix.suite == 'cross-version-upgrade'
         run: |
           curl --fail --silent --show-error --location \
               --proto '=https' --tlsv1.2 \
@@ -643,7 +314,6 @@ jobs:
               https://github.com/Staphylococcus/LG_Buddy/releases/download/v1.4.0-beta.2/lg-buddy-1.4.0-beta.2-x86_64-unknown-linux-musl.tar.gz
 
       - name: Smoke test cross-version upgrade
-        if: matrix.suite == 'cross-version-upgrade'
         run: |
           ./scripts/test-cross-version-upgrade.sh \
               --previous-archive "$RUNNER_TEMP/lg-buddy-1.4.0-beta.2-x86_64-unknown-linux-musl.tar.gz" \
@@ -660,109 +330,33 @@ jobs:
               --candidate-target x86_64-unknown-linux-musl \
               --candidate-commit "${{ github.sha }}"
 
-      - name: Download pinned published v1.8 baseline
-        if: matrix.suite == 'v1-migration'
+      - name: Generate checksums
         run: |
-          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
-              --output "$RUNNER_TEMP/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz" \
-              https://github.com/Staphylococcus/LG_Buddy/releases/download/v1.8.0/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz
+          cd dist
+          sha256sum ./*.tar.gz > sha256sums.txt
 
-      - name: Verify v1.8 payload upgrade before installed GUI startup migration
-        if: matrix.suite == 'v1-migration'
+      - name: Verify checksums
         run: |
-          dbus-run-session -- xvfb-run -a env ADW_DISABLE_PORTAL=1 GDK_BACKEND=x11 \
-              /usr/bin/python3 scripts/test-v1-bundle-migration.py \
-              --previous-archive "$RUNNER_TEMP/lg-buddy-1.8.0-x86_64-unknown-linux-musl.tar.gz" \
-              --candidate-archive "dist/lg-buddy-$SMOKE_VERSION-x86_64-unknown-linux-musl.tar.gz" \
-              --expected-tag "v$SMOKE_VERSION" --expected-commit "$GITHUB_SHA" \
-              --work-dir "$RUNNER_TEMP/v1-migration"
+          cd dist
+          sha256sum -c sha256sums.txt
 
-      - name: Upload v1.8 migration evidence
-        if: always() && matrix.suite == 'v1-migration'
-        uses: actions/upload-artifact@v6
-        with:
-          name: v1-bundle-migration
-          path: |
-            ${{ runner.temp }}/v1-migration/**/*.output
-            ${{ runner.temp }}/v1-migration/**/result.json
-          if-no-files-found: warn
-
-  bundle-smoke-test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 2
-    needs: [bundle-build, bundle-smoke-suites, bundle-supported-distros, plasma-setup, debian-package, rpm-package, dnf-update-fedora44, rpm-update-fedora43-refusal, release-assets]
-    # Keep the required check failing when production or any suite fails,
-    # times out, or is skipped, even after an upstream failure.
-    if: ${{ always() }}
-    steps:
-      - name: Require every bundle, distribution and native package smoke suite to pass
+      - name: Dry-run publish release assets
         env:
-          BUILD_RESULT: ${{ needs.bundle-build.result }}
-          SMOKE_RESULT: ${{ needs.bundle-smoke-suites.result }}
-          DISTRO_RESULT: ${{ needs.bundle-supported-distros.result }}
-          PLASMA_RESULT: ${{ needs.plasma-setup.result }}
-          DEBIAN_RESULT: ${{ needs.debian-package.result }}
-          RPM_RESULT: ${{ needs.rpm-package.result }}
-          DNF_RESULT: ${{ needs.dnf-update-fedora44.result }}
-          RPM_REFUSAL_RESULT: ${{ needs.rpm-update-fedora43-refusal.result }}
-          ASSETS_RESULT: ${{ needs.release-assets.result }}
-        run: |
-          if [ "$BUILD_RESULT" != success ] || [ "$SMOKE_RESULT" != success ] || [ "$DISTRO_RESULT" != success ] || [ "$PLASMA_RESULT" != success ] || [ "$DEBIAN_RESULT" != success ] || [ "$RPM_RESULT" != success ] || [ "$DNF_RESULT" != success ] || [ "$RPM_REFUSAL_RESULT" != success ] || [ "$ASSETS_RESULT" != success ]; then
-            echo "Native Plasma setup: $PLASMA_RESULT" >&2
-            echo "Bundle build: $BUILD_RESULT; smoke suites: $SMOKE_RESULT; supported distributions: $DISTRO_RESULT; Debian package: $DEBIAN_RESULT; RPM package: $RPM_RESULT; DNF update: $DNF_RESULT; Fedora 43 refusal: $RPM_REFUSAL_RESULT; release assets: $ASSETS_RESULT" >&2
-            exit 1
-          fi
-
-  plasma-setup:
-    needs: bundle-build
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Arch current
-            image: archlinux:latest
-            setup: pacman -Syu --noconfirm --needed kwin gcc cmake make pkgconf extra-cmake-modules qt6-base qt6-declarative wayland libepoxy libdrm vulkan-headers dbus binutils sudo shadow util-linux mesa xkeyboard-config
-          - name: Fedora 44
-            image: fedora:44
-            setup: dnf install -y kwin kwin-devel gcc-c++ cmake make pkgconf-pkg-config extra-cmake-modules qt6-qtbase-devel qt6-qtdeclarative-devel wayland-devel libepoxy-devel libdrm-devel vulkan-headers dbus-daemon systemd binutils sudo shadow-utils util-linux mesa-dri-drivers xkeyboard-config
-    container:
-      image: ${{ matrix.image }}
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install Plasma test prerequisites
-        run: ${{ matrix.setup }}
-      - uses: actions/download-artifact@v7
-        with:
-          name: ci-release-bundle
-          path: dist
-      - name: Exercise native setup and repair with the real distro KWin
-        shell: bash
-        run: |
-          useradd --create-home tester
-          printf 'tester ALL=(root) NOPASSWD: ALL\n' > /etc/sudoers.d/lg-buddy-test
-          chmod 440 /etc/sudoers.d/lg-buddy-test
-          archive="$(find dist -maxdepth 1 -name '*.tar.gz' -print -quit)"
-          extraction="$(mktemp -d)"
-          tar --no-same-owner -C "$extraction" -xzf "$archive"
-          bundle="$(find "$extraction" -mindepth 1 -maxdepth 1 -type d -print -quit)"
-          install -m 755 "$bundle/lg-buddy" /usr/bin/lg-buddy
-          install -d /usr/lib/lg-buddy
-          cp -a "$bundle/docs/kwin" /usr/lib/lg-buddy/kwin
-          runuser -u tester -- dbus-run-session -- env LG_BUDDY_DISPOSABLE_TEST=1 \
-            bash scripts/test-kwin-native-setup.sh /usr/bin/lg-buddy /usr/lib/lg-buddy/kwin
+          GH_RELEASE_DRY_RUN: "1"
+        run: ./scripts/publish-release-assets.sh stage-draft --dist-dir dist --tag "v${SMOKE_VERSION}" --commit "${{ github.sha }}"
 
   bundle-supported-distros:
     needs: bundle-build
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      SMOKE_VERSION: 1.4.0-beta.2.ci
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: Fedora 44
-            image: fedora:44
+          - name: Fedora 43
+            image: fedora:43
             package_manager: dnf
             setup: dnf install -y at-spi2-core binutils curl dbus-x11 findutils glib2 gobject-introspection gsettings-desktop-schemas gtk4 gzip libadwaita libglvnd-gles polkit procps-ng python3 python3-dbus python3-pyatspi shadow-utils strace tar util-linux which xdotool xorg-x11-server-Xvfb xorg-x11-xauth xwd
           - name: Arch current

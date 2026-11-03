@@ -126,14 +126,6 @@ impl MockSessionBusIdleMonitor {
         self.patch_state(|state| state.default_idletime = value);
     }
 
-    pub fn user_active_watch_count(&self) -> usize {
-        self.state
-            .lock()
-            .expect("mock idle monitor state lock")
-            .user_active_watches
-            .len()
-    }
-
     pub fn set_session_manager_available(&self, available: bool) {
         self.patch_state(|state| state.session_manager_available = available);
         wait_for_mock_bus_name_sync();
@@ -1597,7 +1589,7 @@ pub fn python3_path() -> PathBuf {
         .clone()
 }
 
-pub fn dbus_daemon_path() -> PathBuf {
+fn dbus_daemon_path() -> PathBuf {
     static DBUS_DAEMON_PATH: OnceLock<PathBuf> = OnceLock::new();
 
     DBUS_DAEMON_PATH

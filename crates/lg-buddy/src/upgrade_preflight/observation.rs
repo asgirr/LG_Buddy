@@ -227,11 +227,7 @@ impl InstalledLayout {
     }
 
     pub fn config_pointer(&self) -> PathBuf {
-        self.system_path(crate::config::binding::MACHINE_BINDING)
-    }
-
-    pub fn legacy_config_pointer(&self) -> PathBuf {
-        self.system_path(crate::config::binding::LEGACY_BINDING)
+        self.system_path("/usr/lib/lg-buddy/config-path")
     }
 
     pub(super) fn user_systemd_path(&self, path: &str) -> PathBuf {
@@ -361,7 +357,7 @@ mod tests {
         );
         assert_eq!(
             layout.config_pointer(),
-            PathBuf::from("/opt/etc/lg-buddy/config-path")
+            PathBuf::from("/opt/usr/lib/lg-buddy/config-path")
         );
     }
 

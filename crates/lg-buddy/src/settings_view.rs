@@ -297,27 +297,8 @@ impl fmt::Display for SettingsReadError {
 
 impl Error for SettingsReadError {}
 
-/// Settings and their observed update owner returned by one read operation.
-#[derive(Debug, Clone)]
-pub struct SettingsReadSnapshot {
-    pub groups: Vec<SettingsGroup>,
-    pub installation_ownership: Option<crate::upgrade_preflight::InstallationOwnership>,
-}
-
-impl From<Vec<SettingsGroup>> for SettingsReadSnapshot {
-    fn from(groups: Vec<SettingsGroup>) -> Self {
-        Self {
-            groups,
-            installation_ownership: None,
-        }
-    }
-}
-
 pub trait SettingsBackend: Send + Sync + 'static {
     fn read_settings(&self) -> Result<Vec<SettingsGroup>, SettingsReadError>;
-    fn read_settings_snapshot(&self) -> Result<SettingsReadSnapshot, SettingsReadError> {
-        self.read_settings().map(SettingsReadSnapshot::from)
-    }
 
     fn check_for_updates(&self) -> Result<UpdateCheckReport, UpdateCheckError>;
 
@@ -332,28 +313,10 @@ pub trait SettingsBackend: Send + Sync + 'static {
 pub struct EnvironmentSettingsBackend;
 
 impl SettingsBackend for EnvironmentSettingsBackend {
-    fn read_settings_snapshot(&self) -> Result<SettingsReadSnapshot, SettingsReadError> {
-        Ok(SettingsReadSnapshot {
-            groups: self.read_settings()?,
-            installation_ownership: Some(crate::update_install::gui_update_ownership()),
-        })
-    }
     fn check_for_updates(&self) -> Result<UpdateCheckReport, UpdateCheckError> {
-        let outcome = match crate::updates::check_for_updates() {
-            Err(crate::updates::UpdatesError::ExternallyManaged(ownership)) => {
-                return Ok(UpdateCheckReport {
-                    installed_version: crate::version::VersionInfo::current().version().into(),
-                    channel: crate::updates::saved_update_channel()?,
-                    update_available: false,
-                    warning: None,
-                    installation_ownership: ownership,
-                });
-            }
-            outcome => outcome?,
-        };
+        let outcome = crate::updates::check_for_updates()?;
         let result = outcome.result();
         Ok(UpdateCheckReport {
-            installation_ownership: crate::update_install::gui_update_ownership(),
             installed_version: result.current_version().to_string(),
             channel: result.check_channel(),
             update_available: result.update_available(),
@@ -400,7 +363,7 @@ impl SettingsBackend for EnvironmentSettingsBackend {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SettingsApplicationState {
-    Loading,
+    Loading(SettingsReadOperation),
     Ready,
     Failed,
 }
@@ -414,7 +377,6 @@ struct PendingMutation {
 #[derive(Debug)]
 pub struct SettingsApplication {
     state: SettingsApplicationState,
-    pending_read: Option<SettingsReadOperation>,
     next_operation_id: u64,
     presentation: SettingsPresentation,
     controls_available: bool,
@@ -432,8 +394,7 @@ impl SettingsApplication {
         let presentation = SettingsPresentation::loading();
         (
             Self {
-                state: SettingsApplicationState::Loading,
-                pending_read: Some(operation),
+                state: SettingsApplicationState::Loading(operation),
                 next_operation_id: 1,
                 presentation: presentation.clone(),
                 controls_available: true,
@@ -484,7 +445,6 @@ impl SettingsApplication {
             SettingsIntent::CheckForUpdates
                 if self.pending_update_check.is_none()
                     && !self.update_install.active()
-                    && self.presentation.update_check().check_action().enabled()
                     && !self.presentation.groups().is_empty() =>
             {
                 let operation = UpdateCheckOperation(self.next_operation_id);
@@ -550,18 +510,9 @@ impl SettingsApplication {
         operation: SettingsReadOperation,
         result: Result<Vec<SettingsGroup>, SettingsReadError>,
     ) -> Option<SettingsTransition> {
-        self.complete_snapshot(operation, result.map(SettingsReadSnapshot::from))
-    }
-
-    pub fn complete_snapshot(
-        &mut self,
-        operation: SettingsReadOperation,
-        result: Result<SettingsReadSnapshot, SettingsReadError>,
-    ) -> Option<SettingsTransition> {
-        if self.pending_read != Some(operation) {
+        if !matches!(self.state, SettingsApplicationState::Loading(active) if active == operation) {
             return None;
         }
-        self.pending_read = None;
 
         if self.closed {
             return self
@@ -569,14 +520,10 @@ impl SettingsApplication {
                 .map(|next| self.transition(None, Some(next), None));
         }
 
-        let observed_ownership = result
-            .as_ref()
-            .ok()
-            .and_then(|snapshot| snapshot.installation_ownership);
         let (presentation, diagnostic) = match result {
-            Ok(snapshot) => {
+            Ok(groups) => {
                 let previous = self.presentation.clone();
-                let mut presentation = SettingsPresentation::ready(snapshot.groups);
+                let mut presentation = SettingsPresentation::ready(groups);
                 presentation.preserve_apply_failures_from(&previous);
                 if let Some(pending) = self.reconcile_mutation.take() {
                     let changed =
@@ -621,10 +568,7 @@ impl SettingsApplication {
                 )
             }
         };
-        let mut update_check = self.presentation.update_check().clone();
-        if let Some(ownership) = observed_ownership {
-            update_check.set_installation_ownership(ownership);
-        }
+        let update_check = self.presentation.update_check().clone();
         self.presentation = presentation;
         *self.presentation.update_check_mut() = update_check;
         if matches!(self.state, SettingsApplicationState::Ready) {
@@ -650,26 +594,6 @@ impl SettingsApplication {
                 .map(|next| self.transition(None, Some(next), None));
         }
         self.pending_mutation = None;
-
-        // A newer read can establish management while an earlier worker is
-        // completing. Its saved-value result must not replace declared data.
-        if self
-            .presentation
-            .row(operation.setting())
-            .is_some_and(|row| row.managed_by().is_some())
-        {
-            self.presentation.set_row_state(
-                operation.setting(),
-                SettingsEditStatus::Unchanged,
-                None,
-                false,
-            );
-            self.state = SettingsApplicationState::Ready;
-            return self.finish_mutation(
-                Some(operation.setting()),
-                result.err().map(|failure| failure.error().to_string()),
-            );
-        }
 
         match result {
             Ok(outcome) => {
@@ -844,16 +768,7 @@ impl SettingsApplication {
         }
         let up_to_date = matches!(result, Ok(UpdateInstallOutcome::UpToDate))
             && matches!(operation.task(), UpdateInstallTask::Prepare { .. });
-        let restriction = match &result {
-            Ok(UpdateInstallOutcome::Restricted { ownership, .. }) => Some(*ownership),
-            _ => None,
-        };
         let (next, diagnostic) = self.update_install.complete(operation, result)?;
-        if let Some(ownership) = restriction {
-            self.presentation
-                .update_check_mut()
-                .set_installation_ownership(ownership);
-        }
         let notice = if up_to_date {
             self.presentation.update_check_mut().clear_result();
             Some(UpdateNotice::new("Already up to date", None))
@@ -896,8 +811,7 @@ impl SettingsApplication {
     fn begin_read(&mut self) -> SettingsTransition {
         let operation = SettingsReadOperation::new(self.next_operation_id);
         self.next_operation_id += 1;
-        self.state = SettingsApplicationState::Loading;
-        self.pending_read = Some(operation);
+        self.state = SettingsApplicationState::Loading(operation);
         self.presentation.mark_loading();
         self.transition(Some(operation), None, None)
     }
@@ -908,16 +822,10 @@ impl SettingsApplication {
         request: SettingsMutationRequest,
     ) -> Option<SettingsTransition> {
         let previous_row = self.presentation.row(setting)?.clone();
-        if previous_row.managed_by().is_some() {
-            return None;
-        }
-        // A newly submitted edit supersedes an older read. Completion of an
-        // already submitted edit must leave a newer read's token intact.
-        if self.pending_read.take().is_some() {
+        if matches!(self.state, SettingsApplicationState::Loading(_)) {
             let update_check = self.presentation.update_check().clone();
             self.presentation = SettingsPresentation::ready(self.presentation.groups().to_vec());
             *self.presentation.update_check_mut() = update_check;
-            self.state = SettingsApplicationState::Ready;
         }
         let operation = SettingsMutationOperation::new(self.next_operation_id, setting, request);
         self.next_operation_id += 1;
@@ -937,9 +845,6 @@ impl SettingsApplication {
     }
 
     fn start_queued_mutation(&mut self) -> Option<SettingsMutationOperation> {
-        if self.pending_mutation.is_some() {
-            return None;
-        }
         let pending = self.queued_mutations.pop_front()?;
         let operation = pending.operation.clone();
         self.pending_mutation = Some(pending);
@@ -957,12 +862,7 @@ impl SettingsApplication {
                 queued.previous_row = self.presentation.row(queued.operation.setting())?.clone();
             }
         }
-        let operation = if self.pending_read.is_some() {
-            self.state = SettingsApplicationState::Loading;
-            None
-        } else {
-            self.start_queued_mutation()
-        };
+        let operation = self.start_queued_mutation();
         // A completion must not replace a newer submitted value in the editor.
         for queued in operation.iter().chain(
             self.queued_mutations
@@ -1038,12 +938,6 @@ fn update_check_notice(
     result: &Result<UpdateCheckReport, UpdateCheckError>,
 ) -> Option<UpdateNotice> {
     match result {
-        Ok(report) if report.installation_ownership.externally_updated() => {
-            Some(UpdateNotice::new(
-                "Managed externally",
-                crate::update_install::update_install_guidance(report.installation_ownership),
-            ))
-        }
         Ok(report) => {
             if !report.update_available {
                 Some(UpdateNotice::new(
@@ -1249,7 +1143,6 @@ mod tests {
 
     fn update_report(channel: crate::updates::UpdateChannel) -> UpdateCheckReport {
         UpdateCheckReport {
-            installation_ownership: crate::upgrade_preflight::InstallationOwnership::Bundle,
             installed_version: "1.6.0".into(),
             channel,
             update_available: true,
@@ -1523,12 +1416,11 @@ screen_backend=wayland\n",
             let definition = SETTINGS_REGISTRY.get_by_name(key).unwrap();
             assert_eq!(rendered.title(), *title);
             if *key == "screen.backend" {
-                assert_eq!(
+                assert!(rendered.description().contains("Saved override: Wayland"));
+                assert!(matches!(
                     rendered.editor(),
-                    &SettingsEditor::AutomaticIntegration {
-                        configured: Some("wayland".into())
-                    }
-                );
+                    SettingsEditor::AutomaticIntegration { .. }
+                ));
                 assert!(rendered.reset_action().is_none());
             } else {
                 assert_eq!(rendered.description(), definition.description());
@@ -1624,85 +1516,6 @@ screen_backend=wayland\n",
             row(ready.presentation().groups(), "Updates", "Update channel").value_label(),
             "Stable"
         );
-    }
-
-    #[test]
-    fn newer_read_survives_failed_mutation_completion() {
-        let (mut app, opening) = SettingsApplication::open();
-        app.complete_read(
-            opening.read_operation().unwrap(),
-            Ok(groups("screen_idle_timeout=600\n")),
-        )
-        .unwrap();
-        let pending = app
-            .handle_intent(SettingsIntent::Commit {
-                setting: BehaviorSetting::ScreenIdleTimeout,
-                value: "450".into(),
-            })
-            .unwrap();
-        let refresh = app.profile_changed();
-        app.complete_mutation(
-            pending.mutation_operation().unwrap(),
-            Err(SettingsMutationFailure::Persistence(
-                SettingsError::WriteConfig {
-                    path: "/tmp/config.env".into(),
-                    message: "write failed".into(),
-                },
-            )),
-        )
-        .unwrap();
-        assert!(app.handle_intent(SettingsIntent::Refresh).is_none());
-        let fresh = app
-            .complete_read(
-                refresh.read_operation().unwrap(),
-                Ok(groups("screen_idle_timeout=300\n")),
-            )
-            .unwrap();
-        assert_eq!(
-            fresh
-                .presentation()
-                .row(BehaviorSetting::ScreenIdleTimeout)
-                .unwrap()
-                .editor(),
-            &SettingsEditor::Number { text: "300".into() }
-        );
-        assert!(matches!(
-            fresh.presentation().status(),
-            SettingsStatus::Ready
-        ));
-        assert!(!app.is_mutating());
-    }
-
-    #[test]
-    fn a_new_edit_supersedes_an_older_read() {
-        let (mut app, opening) = SettingsApplication::open();
-        app.complete_read(
-            opening.read_operation().unwrap(),
-            Ok(groups("screen_idle_timeout=600\n")),
-        )
-        .unwrap();
-        let refresh = app.profile_changed();
-        let pending = app
-            .handle_intent(SettingsIntent::Commit {
-                setting: BehaviorSetting::ScreenIdleTimeout,
-                value: "450".into(),
-            })
-            .unwrap();
-        assert!(pending.mutation_operation().is_some());
-        assert!(app
-            .complete_read(
-                refresh.read_operation().unwrap(),
-                Ok(groups("screen_idle_timeout=300\n"))
-            )
-            .is_none());
-        assert_eq!(
-            app.presentation()
-                .row(BehaviorSetting::ScreenIdleTimeout)
-                .unwrap()
-                .editor(),
-            &SettingsEditor::Number { text: "600".into() }
-        );
-        assert!(app.is_mutating());
     }
 
     #[test]

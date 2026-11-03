@@ -9,9 +9,7 @@ use std::{collections::HashMap, io};
 
 const CONFIG_DIR_NAME: &str = "lg-buddy";
 const CONFIG_FILE_NAME: &str = "config.env";
-mod activation;
-pub mod binding;
-pub mod declarative;
+const INSTALL_CONFIG_POINTER_FILE: &str = "/usr/lib/lg-buddy/config-path";
 pub const DEFAULT_IDLE_TIMEOUT: u64 = 300;
 pub const MAX_IDLE_TIMEOUT: u64 = 86_400;
 
@@ -32,7 +30,7 @@ pub fn normalize_idle_timeout_secs(idle_timeout_secs: u128) -> u64 {
 #[derive(Debug, Clone, Default)]
 pub struct ConfigPathSources<'a> {
     pub explicit_config: Option<&'a Path>,
-    pub user_selected_config: Option<&'a Path>,
+    pub install_pointer_config: Option<&'a Path>,
     pub sudo_user_home: Option<&'a Path>,
     pub xdg_config_home: Option<&'a Path>,
     pub home: Option<&'a Path>,
@@ -41,13 +39,11 @@ pub struct ConfigPathSources<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigPathError {
     NotConfigured,
-    InvalidBinding(String),
 }
 
 impl fmt::Display for ConfigPathError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidBinding(message) => write!(f, "invalid config binding: {message}"),
             Self::NotConfigured => {
                 write!(
                     f,
@@ -397,7 +393,7 @@ pub fn resolve_config_path(sources: ConfigPathSources<'_>) -> Result<PathBuf, Co
         return Ok(path.to_path_buf());
     }
 
-    if let Some(path) = sources.user_selected_config {
+    if let Some(path) = sources.install_pointer_config {
         return Ok(path.to_path_buf());
     }
 
@@ -422,55 +418,30 @@ pub fn resolve_config_path(sources: ConfigPathSources<'_>) -> Result<PathBuf, Co
     Err(ConfigPathError::NotConfigured)
 }
 
-pub(crate) fn user_binding_path_from_env() -> Option<PathBuf> {
-    let config_home = resolve_sudo_user_home()
-        .map(|home| home.join(".config"))
-        .or_else(|| {
-            env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .filter(|path| path.is_absolute())
-        })
-        .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(config_home.join(CONFIG_DIR_NAME).join("config-path"))
-}
-
 pub fn resolve_config_path_from_env() -> Result<PathBuf, ConfigPathError> {
-    // An explicit service/CLI path never depends on discovery records.
-    if let Some(path) = env::var_os("LG_BUDDY_CONFIG") {
-        return Ok(PathBuf::from(path));
-    }
-    let user_selected_config = user_binding_path_from_env()
-        .map(|path| {
-            let owner = env::var("SUDO_UID")
-                .ok()
-                .and_then(|uid| uid.parse().ok())
-                .filter(|_| resolve_sudo_user_home().is_some())
-                .unwrap_or_else(|| unsafe { libc::geteuid() });
-            binding::read(&path, owner).map_err(|error| {
-                ConfigPathError::InvalidBinding(format!("{}: {error}", path.display()))
-            })
-        })
-        .transpose()?
-        .flatten();
+    let explicit_config = env::var_os("LG_BUDDY_CONFIG").map(PathBuf::from);
+    let install_pointer_config = load_install_pointer_config();
     let sudo_user_home = resolve_sudo_user_home();
-    let xdg_config_home = env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute());
+    let xdg_config_home = env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
     let home = env::var_os("HOME").map(PathBuf::from);
+
     resolve_config_path(ConfigPathSources {
-        explicit_config: None,
-        user_selected_config: user_selected_config.as_deref(),
+        explicit_config: explicit_config.as_deref(),
+        install_pointer_config: install_pointer_config.as_deref(),
         sudo_user_home: sudo_user_home.as_deref(),
         xdg_config_home: xdg_config_home.as_deref(),
         home: home.as_deref(),
     })
 }
 
-pub fn resolve_machine_config_path_from_env() -> Result<PathBuf, ConfigPathError> {
-    if let Some(path) = env::var_os("LG_BUDDY_CONFIG") {
-        return Ok(PathBuf::from(path));
+fn load_install_pointer_config() -> Option<PathBuf> {
+    let contents = fs::read_to_string(INSTALL_CONFIG_POINTER_FILE).ok()?;
+    let path = contents.lines().next()?.trim();
+    if path.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(path))
     }
-    binding::machine_path().map_err(|error| ConfigPathError::InvalidBinding(error.to_string()))
 }
 
 fn resolve_sudo_user_home() -> Option<PathBuf> {
@@ -651,10 +622,7 @@ pub fn load_current_config(path: &Path) -> Result<CurrentConfig, ConfigLoadError
             ConfigLoadError::Unreadable(err)
         }
     })?;
-    let effective = declarative::Declarations::load(path)
-        .map_err(ConfigLoadError::Unreadable)?
-        .map(|declarations| declarations.effective_contents(&contents));
-    let config = parse_current_config(effective.as_deref().unwrap_or(&contents))?;
+    let config = parse_current_config(&contents)?;
     Ok(CurrentConfig {
         path: path.to_path_buf(),
         config,
@@ -663,9 +631,7 @@ pub fn load_current_config(path: &Path) -> Result<CurrentConfig, ConfigLoadError
 
 pub fn load_config(path: &Path) -> Result<Config, ConfigError> {
     let contents = fs::read_to_string(path)?;
-    let effective = declarative::Declarations::load(path)?
-        .map(|declarations| declarations.effective_contents(&contents));
-    parse_config(effective.as_deref().unwrap_or(&contents))
+    parse_config(&contents)
 }
 
 pub fn parse_config(contents: &str) -> Result<Config, ConfigError> {
@@ -817,7 +783,7 @@ mod tests {
     fn explicit_config_override_wins() {
         let resolved = resolve_config_path(ConfigPathSources {
             explicit_config: Some(Path::new("/tmp/custom.env")),
-            user_selected_config: Some(Path::new("/tmp/pointer.env")),
+            install_pointer_config: Some(Path::new("/tmp/pointer.env")),
             sudo_user_home: Some(Path::new("/tmp/sudo-home")),
             xdg_config_home: Some(Path::new("/tmp/xdg")),
             home: Some(Path::new("/tmp/home")),
@@ -830,7 +796,7 @@ mod tests {
     fn xdg_config_home_is_used_when_override_is_missing() {
         let resolved = resolve_config_path(ConfigPathSources {
             explicit_config: None,
-            user_selected_config: None,
+            install_pointer_config: None,
             sudo_user_home: None,
             xdg_config_home: Some(Path::new("/tmp/xdg")),
             home: Some(Path::new("/tmp/home")),
@@ -843,7 +809,7 @@ mod tests {
     fn home_is_used_when_xdg_is_missing() {
         let resolved = resolve_config_path(ConfigPathSources {
             explicit_config: None,
-            user_selected_config: None,
+            install_pointer_config: None,
             sudo_user_home: None,
             xdg_config_home: None,
             home: Some(Path::new("/tmp/home")),
@@ -860,10 +826,10 @@ mod tests {
     }
 
     #[test]
-    fn user_selected_config_is_used_before_user_env_paths() {
+    fn install_pointer_config_is_used_before_user_env_paths() {
         let resolved = resolve_config_path(ConfigPathSources {
             explicit_config: None,
-            user_selected_config: Some(Path::new("/tmp/pointer.env")),
+            install_pointer_config: Some(Path::new("/tmp/pointer.env")),
             sudo_user_home: Some(Path::new("/tmp/sudo-home")),
             xdg_config_home: Some(Path::new("/tmp/xdg")),
             home: Some(Path::new("/tmp/home")),
@@ -876,7 +842,7 @@ mod tests {
     fn sudo_user_home_is_used_before_current_home() {
         let resolved = resolve_config_path(ConfigPathSources {
             explicit_config: None,
-            user_selected_config: None,
+            install_pointer_config: None,
             sudo_user_home: Some(Path::new("/home/installing-user")),
             xdg_config_home: Some(Path::new("/tmp/xdg")),
             home: Some(Path::new("/root")),

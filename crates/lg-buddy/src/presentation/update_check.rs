@@ -2,7 +2,6 @@ use crate::presentation::brightness::UserFacingError;
 use crate::presentation::settings::SettingsAction;
 use crate::settings_view::SettingsIntent;
 use crate::updates::UpdateChannel;
-use crate::upgrade_preflight::InstallationOwnership;
 use crate::version::VersionInfo;
 
 /// Update availability on the checked channel, without an installation target.
@@ -12,7 +11,6 @@ pub struct UpdateCheckReport {
     pub channel: UpdateChannel,
     pub update_available: bool,
     pub warning: Option<String>,
-    pub installation_ownership: InstallationOwnership,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,7 +19,6 @@ pub struct UpdateCheckPresentation {
     checking: bool,
     install_active: bool,
     result: Option<UpdateCheckReport>,
-    installation_ownership: Option<InstallationOwnership>,
     error: Option<UserFacingError>,
 }
 
@@ -37,7 +34,6 @@ impl Default for UpdateCheckPresentation {
             checking: false,
             install_active: false,
             result: None,
-            installation_ownership: None,
             error: None,
         }
     }
@@ -52,14 +48,6 @@ impl UpdateCheckPresentation {
         self.checking
     }
 
-    pub fn installation_ownership(&self) -> Option<InstallationOwnership> {
-        self.installation_ownership.or_else(|| {
-            self.result
-                .as_ref()
-                .map(|report| report.installation_ownership)
-        })
-    }
-
     pub fn check_action(&self) -> SettingsAction {
         SettingsAction::new(
             if self.checking {
@@ -69,11 +57,7 @@ impl UpdateCheckPresentation {
             } else {
                 "Check for updates"
             },
-            !self.checking
-                && !self.install_active
-                && !self
-                    .installation_ownership()
-                    .is_some_and(InstallationOwnership::externally_updated),
+            !self.checking && !self.install_active,
             SettingsIntent::CheckForUpdates,
         )
     }
@@ -100,24 +84,10 @@ impl UpdateCheckPresentation {
         self.error = None;
     }
 
-    pub(crate) fn set_installation_ownership(&mut self, ownership: InstallationOwnership) {
-        self.installation_ownership = Some(ownership);
-        if let Some(report) = &mut self.result {
-            report.installation_ownership = ownership;
-        }
-    }
-
     pub(crate) fn complete(&mut self, result: Result<UpdateCheckReport, UserFacingError>) {
         self.checking = false;
         match result {
-            Ok(mut report) => {
-                if let Some(owner) = self
-                    .installation_ownership
-                    .filter(|owner| owner.externally_updated())
-                {
-                    report.installation_ownership = owner;
-                }
-                self.installation_ownership = Some(report.installation_ownership);
+            Ok(report) => {
                 self.result = Some(report);
                 self.error = None;
             }
