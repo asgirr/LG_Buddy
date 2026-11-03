@@ -9,6 +9,64 @@
   <a href="CONTRIBUTING.md">Contribute</a>
 </p>
 
+## NixOS
+
+LG Buddy's NixOS module declares the system and user services that setup
+requires on NixOS. Your system must be built from a flake.
+
+In your system's `flake.nix`, add LG Buddy as an input and import its module:
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    lg-buddy.url = "github:asgirr/LG_Buddy";
+  };
+
+  outputs = { nixpkgs, lg-buddy, ... }: {
+    nixosConfigurations.my-pc = nixpkgs.lib.nixosSystem {
+      modules = [
+        ./configuration.nix
+        lg-buddy.nixosModules.default
+      ];
+    };
+  };
+}
+```
+
+In `configuration.nix`, enable it for the user who pairs the TV in the app:
+
+```nix
+{
+  services.lg-buddy = {
+    enable = true;
+    user = "alice";
+  };
+}
+```
+
+Rebuild with `sudo nixos-rebuild switch --flake .#my-pc`, log out and back
+in, then open LG Buddy, pair the TV and choose **Recheck**. See
+[Nix development](docs/development.md#nix) for the module's options.
+
+If this repository is private, Nix needs your GitHub credentials to fetch it.
+To use your SSH key from `~/.ssh/`, point the input at SSH in `flake.nix`:
+
+```nix
+lg-buddy.url = "git+ssh://git@github.com/asgirr/LG_Buddy";
+```
+
+Then rebuild as your own user, so Nix fetches with your `~/.ssh` keys and SSH
+agent and asks for your password only to activate the new system:
+
+```sh
+nixos-rebuild switch --flake .#my-pc --sudo
+```
+
+Older NixOS releases use `--use-remote-sudo` instead of `--sudo`. Running
+`sudo nixos-rebuild` instead fetches as root, which reads `/root/.ssh` and
+fails with "Permission denied (publickey)".
+
 Use your LG webOS TV as a Linux PC display with less reaching for the remote.
 
 - **Start and stop with your PC.** Turn the TV on at boot and wake, and off at

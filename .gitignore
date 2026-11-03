@@ -27,3 +27,7 @@ dist/
 
 # Repository-local scratch artifacts
 /tmp/
+
+# Nix build output
+result
+result-*
