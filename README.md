@@ -11,6 +11,8 @@
 
 ## NixOS
 
+### [Note from Oskar: Looks good! :)]
+
 LG Buddy's NixOS module declares the system and user services that setup
 requires on NixOS. Your system must be built from a flake.
 
